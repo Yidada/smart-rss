@@ -58,11 +58,61 @@ Format your response as JSON:
   "highlights": ["Highlight 1", "Highlight 2", "Highlight 3"]
 }
 
-Only respond with valid JSON, no additional text.`;
+Only respond with valid JSON, no additional text. Do not wrap the JSON in markdown or code fences.`;
 }
 
 async function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function normalizeJsonContent(content: string): string {
+  const trimmed = content.trim();
+  const fencedMatch = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  if (fencedMatch) {
+    return fencedMatch[1].trim();
+  }
+
+  const inlineFenceMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  if (inlineFenceMatch) {
+    return inlineFenceMatch[1].trim();
+  }
+
+  return trimmed;
+}
+
+function parseJsonResponse(
+  content: string
+): { overview?: string; highlights?: string[] } {
+  const normalized = normalizeJsonContent(content);
+  const candidates: string[] = [normalized];
+
+  const firstBrace = normalized.indexOf("{");
+  const lastBrace = normalized.lastIndexOf("}");
+  if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+    const sliced = normalized.slice(firstBrace, lastBrace + 1).trim();
+    if (!candidates.includes(sliced)) {
+      candidates.push(sliced);
+    }
+  }
+
+  for (const candidate of candidates) {
+    try {
+      return JSON.parse(candidate) as { overview?: string; highlights?: string[] };
+    } catch {
+      // Try next candidate
+    }
+  }
+
+  const withoutTrailingCommas = normalized.replace(/,\s*([}\]])/g, "$1");
+  try {
+    return JSON.parse(withoutTrailingCommas) as {
+      overview?: string;
+      highlights?: string[];
+    };
+  } catch {
+    const snippet = normalized.replace(/\s+/g, " ").slice(0, 200);
+    throw new Error(`Failed to parse JSON response from AI. Snippet: ${snippet}`);
+  }
 }
 
 async function summarizeCategory(
@@ -89,11 +139,18 @@ async function summarizeCategory(
       }
 
       // Parse JSON response
-      const parsed = JSON.parse(content);
+      const parsed = parseJsonResponse(content);
+      const overview =
+        typeof parsed.overview === "string"
+          ? parsed.overview
+          : "No overview available.";
+      const highlights = Array.isArray(parsed.highlights)
+        ? parsed.highlights.filter((item) => typeof item === "string")
+        : [];
 
       return {
-        overview: parsed.overview || "No overview available.",
-        highlights: parsed.highlights || [],
+        overview,
+        highlights,
       };
     } catch (error) {
       if (attempt < MAX_RETRIES - 1) {
